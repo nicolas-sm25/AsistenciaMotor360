@@ -9,6 +9,7 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.UUID;
 
+import modelo.acciones.Accion;
 import modelo.entidades.Cliente;
 import modelo.entidades.Maletin;
 import modelo.entidades.Repuesto;
@@ -97,6 +98,11 @@ public class ControladorAsistencia {
      * Pila de repuestos de alta rotación, de la que sale primero el último acomodado.
      */
     private final IPila<Repuesto> repuestos = new Pila<>();
+
+    /**
+     * Pila LIFO de acciones reversibles para deshacer transacciones en orden inverso.
+     */
+    private final IPila<Accion> pilaDeshacer = new Pila<>();
 
     /**
      * Historial reciente de acciones, con la más nueva en la cima.
@@ -358,11 +364,36 @@ public class ControladorAsistencia {
         Solicitud solicitud = new Solicitud(consecutivoSolicitud + 1, cliente, tipoServicio, ubicacion,
                 riesgo, congestion, gravedad);
         consecutivoSolicitud++;
-        if (solicitud.esPrioritaria()) {
+        boolean eraPrioritaria = solicitud.esPrioritaria();
+        if (eraPrioritaria) {
             colaPrioritaria.encolar(solicitud);
         } else {
             colaOrdinaria.encolar(solicitud);
         }
+        pilaDeshacer.apilar(new Accion() {
+            @Override
+            public void ejecutar() throws ReglaNegocioException {
+                if (eraPrioritaria) {
+                    colaPrioritaria.encolar(solicitud);
+                } else {
+                    colaOrdinaria.encolar(solicitud);
+                }
+            }
+
+            @Override
+            public void deshacer() throws ReglaNegocioException {
+                ICola<Solicitud> origen = eraPrioritaria ? colaPrioritaria : colaOrdinaria;
+                if (extraerDeCola(origen, solicitud.getNumero()) == null) {
+                    throw new ReglaNegocioException(
+                            "No se pudo deshacer la creación de la solicitud #" + solicitud.getNumero());
+                }
+            }
+
+            @Override
+            public String getDescripcion() {
+                return "Creación de solicitud " + solicitud;
+            }
+        });
         registrarHistorial("Solicitud creada: " + solicitud + " (puntaje " + solicitud.calcularPuntaje() + ")");
         return solicitud;
     }
@@ -381,6 +412,28 @@ public class ControladorAsistencia {
             throw new ReglaNegocioException("La solicitud #" + numero + " no está en la cola ordinaria");
         }
         colaPrioritaria.encolar(solicitud);
+        pilaDeshacer.apilar(new Accion() {
+            @Override
+            public void ejecutar() throws ReglaNegocioException {
+                if (extraerDeCola(colaOrdinaria, solicitud.getNumero()) != null) {
+                    colaPrioritaria.encolar(solicitud);
+                }
+            }
+
+            @Override
+            public void deshacer() throws ReglaNegocioException {
+                if (extraerDeCola(colaPrioritaria, solicitud.getNumero()) == null) {
+                    throw new ReglaNegocioException(
+                            "No se pudo deshacer el escalamiento de la solicitud #" + solicitud.getNumero());
+                }
+                colaOrdinaria.encolar(solicitud);
+            }
+
+            @Override
+            public String getDescripcion() {
+                return "Escalamiento de solicitud " + solicitud;
+            }
+        });
         registrarHistorial("Solicitud escalada a prioritaria: " + solicitud);
         return solicitud;
     }
@@ -424,15 +477,46 @@ public class ControladorAsistencia {
         Tecnico tecnico = buscarTecnico(identificacionTecnico);
         validarDisponibilidadRecursos(unidad, tecnico);
 
+        boolean veniaDePrioritaria = !colaPrioritaria.estaVacia();
         solicitud.asignarRecursos(unidad, tecnico);
         solicitud.marcarAtendida();
 
-        if (!colaPrioritaria.estaVacia()) {
+        if (veniaDePrioritaria) {
             colaPrioritaria.desencolar();
         } else {
             colaOrdinaria.desencolar();
         }
         solicitudesActivas.agregar(solicitud);
+        pilaDeshacer.apilar(new Accion() {
+            @Override
+            public void ejecutar() throws ReglaNegocioException {
+                solicitud.asignarRecursos(unidad, tecnico);
+                solicitud.marcarAtendida();
+                if (veniaDePrioritaria) {
+                    extraerDeCola(colaPrioritaria, solicitud.getNumero());
+                } else {
+                    extraerDeCola(colaOrdinaria, solicitud.getNumero());
+                }
+                solicitudesActivas.agregar(solicitud);
+            }
+
+            @Override
+            public void deshacer() throws ReglaNegocioException {
+                solicitudesActivas.eliminarDato(solicitud);
+                solicitud.revertirAtendida();
+                solicitud.desasignarRecursos();
+                if (veniaDePrioritaria) {
+                    colaPrioritaria.encolar(solicitud);
+                } else {
+                    colaOrdinaria.encolar(solicitud);
+                }
+            }
+
+            @Override
+            public String getDescripcion() {
+                return "Asignación de recursos a solicitud " + solicitud;
+            }
+        });
         registrarHistorial("Recursos asignados: " + solicitud + " con " + unidad + " y " + tecnico);
         return solicitud;
     }
@@ -474,19 +558,45 @@ public class ControladorAsistencia {
         solicitud.marcarSolucionada();
         solicitudesActivas.eliminarDato(solicitud);
         solicitudesSolucionadas.agregar(solicitud);
+        pilaDeshacer.apilar(new Accion() {
+            @Override
+            public void ejecutar() throws ReglaNegocioException {
+                solicitud.marcarSolucionada();
+                solicitudesActivas.eliminarDato(solicitud);
+                solicitudesSolucionadas.agregar(solicitud);
+            }
+
+            @Override
+            public void deshacer() throws ReglaNegocioException {
+                solicitudesSolucionadas.eliminarDato(solicitud);
+                solicitud.reabrir();
+                solicitudesActivas.agregar(solicitud);
+            }
+
+            @Override
+            public String getDescripcion() {
+                return "Solución de solicitud " + solicitud;
+            }
+        });
         registrarHistorial("Solicitud solucionada: " + solicitud);
         return solicitud;
     }
 
     /**
      * Deshace la última transacción ejecutada, retrocediendo en orden inverso.
-     * La implementación se completa en el Paso 7.
      *
      * @return descripción de la acción deshecha
      * @throws ReglaNegocioException si no hay acciones por deshacer
      */
     public String deshacer() throws ReglaNegocioException {
-        throw new ReglaNegocioException("La función deshacer se implementa en el Paso 7");
+        if (pilaDeshacer.estaVacia()) {
+            throw new ReglaNegocioException("No hay acciones por deshacer");
+        }
+        Accion ultimaAccion = pilaDeshacer.desapilar();
+        ultimaAccion.deshacer();
+        String descripcion = ultimaAccion.getDescripcion();
+        registrarHistorial("Acción deshecha: " + descripcion);
+        return descripcion;
     }
 
     /**
@@ -515,6 +625,27 @@ public class ControladorAsistencia {
         }
         Maletin maletin = estanteriaMaletines.desapilar();
         maletinesEnServicio.agregar(maletin);
+        pilaDeshacer.apilar(new Accion() {
+            @Override
+            public void ejecutar() throws ReglaNegocioException {
+                if (estanteriaMaletines.estaVacia()) {
+                    throw new ReglaNegocioException("No hay maletines en la estantería");
+                }
+                Maletin m = estanteriaMaletines.desapilar();
+                maletinesEnServicio.agregar(m);
+            }
+
+            @Override
+            public void deshacer() throws ReglaNegocioException {
+                maletinesEnServicio.eliminarDato(maletin);
+                estanteriaMaletines.apilar(maletin);
+            }
+
+            @Override
+            public String getDescripcion() {
+                return "Retiro de " + maletin + " de la estantería";
+            }
+        });
         registrarHistorial("Maletín en servicio: " + maletin);
         return maletin;
     }
@@ -531,9 +662,34 @@ public class ControladorAsistencia {
         if (maletin == null) {
             throw new ReglaNegocioException("No hay un maletín en servicio con el código " + codigo);
         }
+        boolean estabaAuditado = maletin.isAuditado();
         maletinesEnServicio.eliminarDato(maletin);
         maletin.marcarParaAuditoria();
         estacionAuditoria.encolar(maletin);
+        pilaDeshacer.apilar(new Accion() {
+            @Override
+            public void ejecutar() throws ReglaNegocioException {
+                maletinesEnServicio.eliminarDato(maletin);
+                maletin.marcarParaAuditoria();
+                estacionAuditoria.encolar(maletin);
+            }
+
+            @Override
+            public void deshacer() throws ReglaNegocioException {
+                extraerMaletinDeAuditoria(maletin.getCodigo());
+                if (estabaAuditado) {
+                    maletin.marcarAuditado();
+                } else {
+                    maletin.marcarParaAuditoria();
+                }
+                maletinesEnServicio.agregar(maletin);
+            }
+
+            @Override
+            public String getDescripcion() {
+                return "Envío de " + maletin + " a auditoría";
+            }
+        });
         registrarHistorial("Maletín enviado a auditoría: " + maletin);
         return maletin;
     }
@@ -551,6 +707,34 @@ public class ControladorAsistencia {
         Maletin maletin = estacionAuditoria.desencolar();
         maletin.marcarAuditado();
         estanteriaMaletines.apilar(maletin);
+        pilaDeshacer.apilar(new Accion() {
+            @Override
+            public void ejecutar() throws ReglaNegocioException {
+                if (estacionAuditoria.estaVacia()) {
+                    throw new ReglaNegocioException("No hay maletines en la estación de auditoría");
+                }
+                Maletin m = estacionAuditoria.desencolar();
+                m.marcarAuditado();
+                estanteriaMaletines.apilar(m);
+            }
+
+            @Override
+            public void deshacer() throws ReglaNegocioException {
+                if (estanteriaMaletines.estaVacia()
+                        || !estanteriaMaletines.verCima().getCodigo().equals(maletin.getCodigo())) {
+                    throw new ReglaNegocioException(
+                            "No se puede deshacer la auditoría de " + maletin + " porque no está en la cima");
+                }
+                estanteriaMaletines.desapilar();
+                maletin.marcarParaAuditoria();
+                estacionAuditoria.encolar(maletin);
+            }
+
+            @Override
+            public String getDescripcion() {
+                return "Auditoría de " + maletin;
+            }
+        });
         registrarHistorial("Maletín auditado y apilado: " + maletin);
         return maletin;
     }
@@ -581,6 +765,25 @@ public class ControladorAsistencia {
             throw new ReglaNegocioException("No hay repuestos disponibles");
         }
         Repuesto repuesto = repuestos.desapilar();
+        pilaDeshacer.apilar(new Accion() {
+            @Override
+            public void ejecutar() throws ReglaNegocioException {
+                if (repuestos.estaVacia()) {
+                    throw new ReglaNegocioException("No hay repuestos disponibles");
+                }
+                repuestos.desapilar();
+            }
+
+            @Override
+            public void deshacer() throws ReglaNegocioException {
+                repuestos.apilar(repuesto);
+            }
+
+            @Override
+            public String getDescripcion() {
+                return "Despacho de repuesto " + repuesto;
+            }
+        });
         registrarHistorial("Repuesto despachado: " + repuesto);
         return repuesto;
     }
@@ -828,6 +1031,26 @@ public class ControladorAsistencia {
             }
         }
         return encontrada;
+    }
+
+    /**
+     * Extrae un maletín de la estación de auditoría por su código sin alterar el resto de la cola.
+     *
+     * @param codigo código del maletín buscado
+     * @return maletín extraído o null si no estaba en auditoría
+     */
+    private Maletin extraerMaletinDeAuditoria(String codigo) {
+        Maletin encontrado = null;
+        int total = estacionAuditoria.tamano();
+        for (int i = 0; i < total; i++) {
+            Maletin actual = estacionAuditoria.desencolar();
+            if (encontrado == null && actual.getCodigo().equals(codigo)) {
+                encontrado = actual;
+            } else {
+                estacionAuditoria.encolar(actual);
+            }
+        }
+        return encontrado;
     }
 
     /**
