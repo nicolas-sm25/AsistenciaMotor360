@@ -16,6 +16,7 @@ import modelo.entidades.Solicitud;
 import modelo.entidades.Tecnico;
 import modelo.entidades.UnidadMovil;
 import modelo.enumeraciones.Disponibilidad;
+import modelo.enumeraciones.EstadoSolicitud;
 import modelo.enumeraciones.EstadoTecnico;
 import modelo.enumeraciones.EstatusUnidad;
 import modelo.enumeraciones.Nivel;
@@ -398,14 +399,14 @@ public class ControladorAsistencia {
     }
 
     /**
-     * Asigna una unidad y un técnico a la próxima solicitud y la marca como atendida.
-     * El orden lo decide el sistema, no el operador, para respetar el turno de llegada.
+     * Asigna una unidad y un técnico a la próxima solicitud en turno, validando las reglas 4 a 8,
+     * y la marca como atendida.
      *
      * @param idUnidad identificador de la unidad a asignar
      * @param identificacionTecnico identificación del técnico a asignar
      * @return solicitud atendida
-     * @throws ReglaNegocioException si no hay solicitudes pendientes, si la unidad o el técnico no
-     *         existen, o si alguno de ellos no puede asignarse
+     * @throws ReglaNegocioException si no hay solicitudes pendientes, la solicitud no tiene cliente,
+     *         la unidad o el técnico no existen, o se incumple alguna regla de asignación
      */
     public Solicitud asignarRecursos(UUID idUnidad, String identificacionTecnico)
             throws ReglaNegocioException {
@@ -413,10 +414,19 @@ public class ControladorAsistencia {
         if (solicitud == null) {
             throw new ReglaNegocioException("No hay solicitudes pendientes por atender");
         }
+        if (solicitud.getCliente() == null) {
+            throw new ReglaNegocioException("Toda solicitud de asistencia debe estar vinculada a un cliente");
+        }
+        if (solicitud.getEstado() != EstadoSolicitud.PENDIENTE) {
+            throw new ReglaNegocioException("Solo se pueden asignar recursos a una solicitud pendiente");
+        }
         UnidadMovil unidad = buscarUnidad(idUnidad);
         Tecnico tecnico = buscarTecnico(identificacionTecnico);
+        validarDisponibilidadRecursos(unidad, tecnico);
+
         solicitud.asignarRecursos(unidad, tecnico);
         solicitud.marcarAtendida();
+
         if (!colaPrioritaria.estaVacia()) {
             colaPrioritaria.desencolar();
         } else {
@@ -425,6 +435,27 @@ public class ControladorAsistencia {
         solicitudesActivas.agregar(solicitud);
         registrarHistorial("Recursos asignados: " + solicitud + " con " + unidad + " y " + tecnico);
         return solicitud;
+    }
+
+    /**
+     * Verifica las reglas 4, 5 y 6 sobre la unidad y el técnico antes de asignar recursos.
+     *
+     * @param unidad unidad a validar
+     * @param tecnico técnico a validar
+     * @throws ReglaNegocioException si la unidad está en mantenimiento, no está disponible o el
+     *         técnico no está libre
+     */
+    private void validarDisponibilidadRecursos(UnidadMovil unidad, Tecnico tecnico)
+            throws ReglaNegocioException {
+        if (unidad.getEstatus() == EstatusUnidad.EN_MANTENIMIENTO) {
+            throw new ReglaNegocioException("La unidad está en mantenimiento y no puede asignarse a un caso");
+        }
+        if (unidad.getDisponibilidad() != Disponibilidad.DISPONIBLE) {
+            throw new ReglaNegocioException("La unidad no está disponible para asignación");
+        }
+        if (!tecnico.estaLibre() || tecnico.getEstado() == EstadoTecnico.EN_SERVICIO) {
+            throw new ReglaNegocioException("El técnico " + tecnico.getNombre() + " ya tiene un servicio activo");
+        }
     }
 
     /**
