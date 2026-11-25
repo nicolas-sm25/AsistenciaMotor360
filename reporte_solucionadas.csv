@@ -1,2 +1,2 @@
 ﻿numero,cliente,documento,servicio,ubicacion,riesgo,congestion,gravedad,puntaje,unidad,tecnico,registro,solucion
-3,"Transportes Andina","9001","Remolque con grúa","Autopista Norte km 8","Alto","Alto","Alto",10,d9ebc839-f8c1-41d8-8514-94d43a5e35d8,"Carlos Pérez",2026-11-25T02:04:11.181678700,2026-11-25T02:04:11.208435
+4,"Seguros Bolívar Vial","8001","Avería mecánica","Avenida Boyacá # 26","Alto","Alto","Alto",11,253f55d5-b53f-43da-bf4e-fbaf898ba7ed,"Carlos Pérez",2026-11-25T02:14:57.917283900,2026-11-25T02:14:57.946995400

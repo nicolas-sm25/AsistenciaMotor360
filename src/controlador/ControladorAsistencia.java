@@ -169,6 +169,22 @@ public class ControladorAsistencia {
     public void enviarUnidadAMantenimiento(UUID id) throws ReglaNegocioException {
         UnidadMovil unidad = buscarUnidad(id);
         unidad.enviarAMantenimiento();
+        pilaDeshacer.apilar(new Accion() {
+            @Override
+            public void ejecutar() throws ReglaNegocioException {
+                unidad.enviarAMantenimiento();
+            }
+
+            @Override
+            public void deshacer() throws ReglaNegocioException {
+                unidad.terminarMantenimiento();
+            }
+
+            @Override
+            public String getDescripcion() {
+                return "Envío a mantenimiento de " + unidad;
+            }
+        });
         registrarHistorial("Unidad en mantenimiento: " + unidad);
     }
 
@@ -181,6 +197,22 @@ public class ControladorAsistencia {
     public void terminarMantenimientoUnidad(UUID id) throws ReglaNegocioException {
         UnidadMovil unidad = buscarUnidad(id);
         unidad.terminarMantenimiento();
+        pilaDeshacer.apilar(new Accion() {
+            @Override
+            public void ejecutar() throws ReglaNegocioException {
+                unidad.terminarMantenimiento();
+            }
+
+            @Override
+            public void deshacer() throws ReglaNegocioException {
+                unidad.enviarAMantenimiento();
+            }
+
+            @Override
+            public String getDescripcion() {
+                return "Salida de mantenimiento de " + unidad;
+            }
+        });
         registrarHistorial("Unidad operando de nuevo: " + unidad);
     }
 
@@ -196,6 +228,22 @@ public class ControladorAsistencia {
             throw new ReglaNegocioException("No se puede eliminar una unidad asignada a un caso");
         }
         unidades.eliminarDato(unidad);
+        pilaDeshacer.apilar(new Accion() {
+            @Override
+            public void ejecutar() throws ReglaNegocioException {
+                unidades.eliminarDato(unidad);
+            }
+
+            @Override
+            public void deshacer() throws ReglaNegocioException {
+                unidades.agregar(unidad);
+            }
+
+            @Override
+            public String getDescripcion() {
+                return "Eliminación de unidad " + unidad;
+            }
+        });
         registrarHistorial("Unidad eliminada: " + unidad);
     }
 
@@ -276,6 +324,22 @@ public class ControladorAsistencia {
             throw new ReglaNegocioException("No se puede eliminar un técnico con un servicio activo");
         }
         tecnicos.eliminarDato(tecnico);
+        pilaDeshacer.apilar(new Accion() {
+            @Override
+            public void ejecutar() throws ReglaNegocioException {
+                tecnicos.eliminarDato(tecnico);
+            }
+
+            @Override
+            public void deshacer() throws ReglaNegocioException {
+                tecnicos.agregar(tecnico);
+            }
+
+            @Override
+            public String getDescripcion() {
+                return "Eliminación de técnico " + tecnico;
+            }
+        });
         registrarHistorial("Técnico eliminado: " + tecnico);
     }
 
@@ -342,6 +406,22 @@ public class ControladorAsistencia {
             throw new ReglaNegocioException("No se puede eliminar un cliente con solicitudes en curso");
         }
         clientes.eliminarDato(cliente);
+        pilaDeshacer.apilar(new Accion() {
+            @Override
+            public void ejecutar() throws ReglaNegocioException {
+                clientes.eliminarDato(cliente);
+            }
+
+            @Override
+            public void deshacer() throws ReglaNegocioException {
+                clientes.agregar(cliente);
+            }
+
+            @Override
+            public String getDescripcion() {
+                return "Eliminación de cliente " + cliente;
+            }
+        });
         registrarHistorial("Cliente eliminado: " + cliente);
     }
 
@@ -583,7 +663,8 @@ public class ControladorAsistencia {
     }
 
     /**
-     * Deshace la última transacción ejecutada, retrocediendo en orden inverso.
+     * Deshace la última transacción ejecutada, retrocediendo en orden inverso y retirando
+     * el registro correspondiente del historial.
      *
      * @return descripción de la acción deshecha
      * @throws ReglaNegocioException si no hay acciones por deshacer
@@ -594,9 +675,10 @@ public class ControladorAsistencia {
         }
         Accion ultimaAccion = pilaDeshacer.desapilar();
         ultimaAccion.deshacer();
-        String descripcion = ultimaAccion.getDescripcion();
-        registrarHistorial("Acción deshecha: " + descripcion);
-        return descripcion;
+        if (!historial.estaVacia()) {
+            historial.desapilar();
+        }
+        return ultimaAccion.getDescripcion();
     }
 
     /**
